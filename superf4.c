@@ -56,6 +56,7 @@ HWND g_hwnd = NULL;
 UINT WM_TASKBARCREATED = 0;
 UINT WM_UPDATESETTINGS = 0;
 wchar_t inipath[MAX_PATH];
+HANDLE instance_mutex = NULL;
 int HookKeyboard();
 int HookMouse();
 int UnhookMouse();
@@ -295,13 +296,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPSTR szCmdLine, in
       }
     }
 
-    if (FindWindow(APP_NAME, NULL) != NULL) {
+    // Named mutex — FindWindow cannot see HWND_MESSAGE windows
+    instance_mutex = CreateMutex(NULL, FALSE, L"Local\\SuperF4-SingleInstance");
+    if (instance_mutex == NULL) {
+      return 1;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+      CloseHandle(instance_mutex);
+      instance_mutex = NULL;
       return 0;
     }
 
     WNDCLASSEX wnd = { sizeof(WNDCLASSEX), 0, WindowProc, 0, 0, hInst, NULL, NULL, NULL, NULL, APP_NAME, NULL };
     RegisterClassEx(&wnd);
     g_hwnd = CreateWindowEx(0, wnd.lpszClassName, APP_NAME, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInst, NULL);
+    if (g_hwnd == NULL) {
+      CloseHandle(instance_mutex);
+      return 1;
+    }
 
     LoadSettings();
     InitTray();
@@ -331,16 +343,19 @@ void Kill(HWND hwnd) {
 
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t name[256] = L"";
-  if (process != NULL) {
-    DWORD ret = GetProcessImageFileName(process, name, ARRAY_SIZE(name));
-    CloseHandle(process);
-    process = NULL;
-    if (ret != 0) {
-      PathStripPath(name);
-      if (NameIsDenied(name)) {
-        return;
-      }
-    }
+  if (process == NULL) {
+    // Cannot identify the process — refuse to kill (may be critical/system)
+    return;
+  }
+  DWORD ret = GetProcessImageFileName(process, name, ARRAY_SIZE(name));
+  CloseHandle(process);
+  process = NULL;
+  if (ret == 0) {
+    return;
+  }
+  PathStripPath(name);
+  if (NameIsDenied(name)) {
+    return;
   }
 
   killing = 1;
@@ -688,6 +703,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     RemoveTray();
     ClearProcessDenylist();
+    if (instance_mutex) {
+      CloseHandle(instance_mutex);
+      instance_mutex = NULL;
+    }
     PostQuitMessage(0);
   }
   else if (msg == WM_TIMER) {

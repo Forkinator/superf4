@@ -71,18 +71,12 @@ Var SkipLowLevelHooksTimeoutPage
 
 !macro CloseApp un
 Function ${un}CloseApp
-  ; Close app if running
-  FindWindow $0 "${APP_NAME}" ""
-  IntCmp $0 0 done
-    DetailPrint "Attempting to closing running ${APP_NAME}..."
-    SendMessage $0 ${WM_CLOSE} 0 0 /TIMEOUT=500
-    waitloop:
-      Sleep 10
-      FindWindow $0 "${APP_NAME}" ""
-      IntCmp $0 0 closed waitloop waitloop
-  closed:
-  Sleep 100 ; Sleep a little extra to let Windows do its thing
-  done:
+  ; Message-only HWND is invisible to FindWindow — close via taskkill
+  DetailPrint "Closing running ${APP_NAME} (if any)..."
+  ExecWait 'taskkill /IM ${APP_NAME}.exe'
+  Sleep 200
+  ExecWait 'taskkill /IM ${APP_NAME}.exe /F'
+  Sleep 100
 FunctionEnd
 !macroend
 !insertmacro CloseApp ""

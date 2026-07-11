@@ -33,14 +33,6 @@ Release assets match Stefan’s layout: `SuperF4-x.y.z.exe` (auto 32/64 installe
 
 ### Note: SuperF4 is a Windows only application!
 
-## Donate
-
-SuperF4 is free software and a one-man endeavor. If you find it useful, please make a donation. I greatly appreciate any support!
-
-You can also support Stefan through [GitHub Sponsorship](https://github.com/sponsors/stefansundin) (there are perks), or through [Patreon](https://www.patreon.com/stefansundin).
-
-Contact Stefan at stefaNStefansundinCom if donation options do not work.
-
 ## What is SuperF4?
 
 SuperF4 kills the foreground program when you press **Ctrl+Alt+F4**. This is different from when you press Alt+F4. When you press Alt+F4, the program can refuse to quit. Windows only asks the program to quit, and lets it decide for itself what to do.

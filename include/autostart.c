@@ -18,8 +18,25 @@ static void ClearRunKey(void) {
 
 static int RunSchtasks(const wchar_t *args, int need_admin) {
   if (need_admin && !elevated) {
-    INT_PTR r = (INT_PTR)ShellExecute(NULL, L"runas", L"schtasks.exe", args, NULL, SW_HIDE);
-    return r > 32;
+    SHELLEXECUTEINFOW sei;
+    ZeroMemory(&sei, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = L"schtasks.exe";
+    sei.lpParameters = args;
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) {
+      return 0;
+    }
+    if (sei.hProcess) {
+      WaitForSingleObject(sei.hProcess, 30000);
+      DWORD code = 1;
+      GetExitCodeProcess(sei.hProcess, &code);
+      CloseHandle(sei.hProcess);
+      return code == 0;
+    }
+    return 0;
   }
 
   wchar_t cmdline[1400];
