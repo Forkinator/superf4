@@ -9,29 +9,34 @@
 
 // No error reporting since we don't want the user to be interrupted
 int CheckAutostart() {
-  // Read registry
   HKEY key;
   wchar_t value[MAX_PATH+20] = L"";
   DWORD len = sizeof(value);
-  RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &key);
-  RegQueryValueEx(key, APP_NAME, NULL, NULL, (LPBYTE)value, &len);
+
+  if (RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+    return 0;
+  }
+  LONG err = RegQueryValueEx(key, APP_NAME, NULL, NULL, (LPBYTE)value, &len);
   RegCloseKey(key);
+  if (err != ERROR_SUCCESS || value[0] == L'\0') {
+    return 0;
+  }
+
   // Compare
   wchar_t path[MAX_PATH], compare[MAX_PATH+20];
   GetModuleFileName(NULL, path, ARRAY_SIZE(path));
   swprintf(compare, ARRAY_SIZE(compare), L"\"%s\"", path);
-  if (wcsstr(value,compare) != value) {
+  if (wcsstr(value, compare) != value) {
     return 0;
   }
   // Autostart is on, check arguments
-  if (wcsstr(value,L" -elevate") != NULL) {
+  if (wcsstr(value, L" -elevate") != NULL) {
     return 2;
   }
   return 1;
 }
 
 void SetAutostart(int on, int elevate) {
-  // Open key
   HKEY key;
   int error = RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL);
   if (error != ERROR_SUCCESS) {
@@ -39,25 +44,23 @@ void SetAutostart(int on, int elevate) {
     return;
   }
   if (on) {
-    // Get path
     wchar_t path[MAX_PATH], value[MAX_PATH+20];
     GetModuleFileName(NULL, path, ARRAY_SIZE(path));
     swprintf(value, ARRAY_SIZE(value), L"\"%s\"%s", path, (elevate?L" -elevate":L""));
-    // Set autostart
-    error = RegSetValueEx(key, APP_NAME, 0, REG_SZ, (LPBYTE)value, (wcslen(value)+1)*sizeof(value[0]));
+    error = RegSetValueEx(key, APP_NAME, 0, REG_SZ, (LPBYTE)value, (DWORD)((wcslen(value)+1)*sizeof(value[0])));
     if (error != ERROR_SUCCESS) {
       Error(L"RegSetValueEx('"APP_NAME"')", L"SetAutostart()", error);
+      RegCloseKey(key);
       return;
     }
   }
   else {
-    // Remove
     error = RegDeleteValue(key, APP_NAME);
-    if (error != ERROR_SUCCESS) {
-    Error(L"RegDeleteValue('"APP_NAME"')", L"SetAutostart()", error);
+    if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND) {
+      Error(L"RegDeleteValue('"APP_NAME"')", L"SetAutostart()", error);
+      RegCloseKey(key);
       return;
     }
   }
-  // Close key
   RegCloseKey(key);
 }

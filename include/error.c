@@ -53,13 +53,19 @@ void _Error(wchar_t *func, wchar_t *info, int errorcode, wchar_t *file, int line
     return;
   }
   // Format message
-  wchar_t msg[1000], *errormsg;
+  wchar_t msg[1000], *errormsg = NULL;
   int length = FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM, NULL, errorcode, 0, (wchar_t*)&errormsg, 0, NULL);
-  if (length != 0) {
-    errormsg[length-2] = '\0'; // Remove that damn newline at the end of the formatted error message
+  if (length != 0 && errormsg != NULL) {
+    // Remove trailing CR/LF from the formatted error message
+    while (length > 0 && (errormsg[length-1] == L'\r' || errormsg[length-1] == L'\n')) {
+      errormsg[--length] = L'\0';
+    }
   }
-  swprintf(msg, ARRAY_SIZE(msg), L"%s failed in file %s, line %d.\nError: %s (%d)\n\n%s", func, file, line, errormsg, errorcode, info);
-  LocalFree(errormsg);
+  swprintf(msg, ARRAY_SIZE(msg), L"%s failed in file %s, line %d.\nError: %s (%d)\n\n%s",
+    func, file, line, errormsg ? errormsg : L"Unknown error", errorcode, info);
+  if (errormsg) {
+    LocalFree(errormsg);
+  }
   // Display message
   #ifdef ERROR_WRITETOFILE
   FILE *f = OpenLog(L"ab");
@@ -75,12 +81,18 @@ void _Error(wchar_t *func, wchar_t *info, int errorcode, wchar_t *file, int line
     // Copy message to clipboard
     int size = (wcslen(msg)+1)*sizeof(msg[0]);
     wchar_t *data = LocalAlloc(LMEM_FIXED, size);
+    if (data == NULL) {
+      return;
+    }
     memcpy(data, msg, size);
-    OpenClipboard(NULL);
-    EmptyClipboard();
-    SetClipboardData(CF_UNICODETEXT, data);
-    CloseClipboard();
-    LocalFree(data);
+    if (OpenClipboard(NULL)) {
+      EmptyClipboard();
+      SetClipboardData(CF_UNICODETEXT, data);
+      CloseClipboard();
+    }
+    else {
+      LocalFree(data);
+    }
   }
   #endif
 }
