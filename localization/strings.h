@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2019  Stefan Sundin
+  Copyright (C) 2026  Forkinator fork contributors
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -17,6 +18,7 @@ struct strings {
     wchar_t *options;
     wchar_t *autostart;
     wchar_t *autostart_elevate;
+    wchar_t *always_elevate;
     wchar_t *timercheck;
     wchar_t *open_ini;
     wchar_t *website;
@@ -38,6 +40,7 @@ struct strings {
     L"Options",
     L"Autostart",
     L"Elevate on autostart",
+    L"Always elevate",
     L"TimerCheck",
     L"Open ini file",
     L"Open website",

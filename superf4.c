@@ -1,5 +1,6 @@
 /*
   Copyright (C) 2019  Stefan Sundin
+  Copyright (C) 2026  Forkinator fork contributors
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -22,8 +23,8 @@
 
 // App
 #define APP_NAME            L"SuperF4"
-#define APP_VERSION         "1.4.1"
-#define APP_URL             L"https://stefansundin.github.io/superf4/"
+#define APP_VERSION         "1.4.2"
+#define APP_URL             L"https://github.com/Forkinator/superf4"
 
 // Messages
 #define WM_TRAY                   WM_USER+1
@@ -40,7 +41,11 @@
 #define SWM_XKILL                 WM_APP+11
 #define SWM_EXIT                  WM_APP+12
 #define CHECKTIMER                WM_APP+13
+#define SWM_ALWAYS_ELEVATE_ON     WM_APP+14
+#define SWM_ALWAYS_ELEVATE_OFF    WM_APP+15
 
+#define TRAY_LEFT_XKILL  0
+#define TRAY_LEFT_TOGGLE 1
 
 // Boring stuff
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -57,18 +62,19 @@ int UnhookMouse();
 int DisableMouse();
 void LoadSettings();
 void RestoreCursors();
+void MaybeShowFirstRunTip();
 
 // Cool stuff
 HHOOK keyhook = NULL;
 HHOOK mousehook = NULL;
-int ctrl = 0;
-int alt = 0;
-int win = 0;
 int superkill = 0;
 #define CHECKINTERVAL 50
-int killing = 0; // Variable to prevent overkill
+int killing = 0;
 int elevated = 0;
 int show_kill_message = 0;
+int always_elevate = 0;
+int tray_left_click = TRAY_LEFT_XKILL;
+int show_first_run_tip = 1;
 HCURSOR killcur = NULL;
 int killcur_applied = 0;
 
@@ -79,11 +85,42 @@ struct denylist {
 };
 struct denylist ProcessDenylist = {NULL, NULL, 0};
 
+// Always-on safety list (cannot be cleared via ini)
+static const wchar_t *kBuiltinDeny[] = {
+  L"explorer.exe",
+  L"dwm.exe",
+  L"csrss.exe",
+  L"winlogon.exe",
+  L"services.exe",
+  L"lsass.exe",
+  L"smss.exe",
+  L"svchost.exe",
+  L"taskmgr.exe",
+  L"System",
+  L"Registry",
+  L"fontdrvhost.exe",
+  L"sihost.exe",
+  L"RuntimeBroker.exe",
+  L"SearchHost.exe",
+  L"StartMenuExperienceHost.exe",
+  L"ShellExperienceHost.exe",
+  L"ApplicationFrameHost.exe",
+  L"SecurityHealthService.exe",
+  L"MsMpEng.exe",
+  L"ctfmon.exe",
+};
+
 // Include stuff
 #include "localization/strings.h"
 #include "include/error.c"
+#include "include/hotkey.c"
 #include "include/autostart.c"
 #include "include/tray.c"
+
+static const struct Hotkey kDefaultKillHotkey = {1, 1, 0, 0, VK_F4};   // Ctrl+Alt+F4
+static const struct Hotkey kDefaultXkillHotkey = {0, 0, 0, 1, VK_F4}; // Win+F4
+struct Hotkey kill_hotkey;
+struct Hotkey xkill_hotkey;
 
 static wchar_t *TrimWide(wchar_t *str) {
   while (*str == L' ' || *str == L'\t') {
@@ -121,7 +158,6 @@ void LoadProcessDenylist(const wchar_t *txt) {
   }
   wcscpy(ProcessDenylist.data, txt);
 
-  // Count commas to allocate item pointers once
   int count = 1;
   for (size_t i = 0; i < len; i++) {
     if (ProcessDenylist.data[i] == L',') {
@@ -149,23 +185,52 @@ void LoadProcessDenylist(const wchar_t *txt) {
   }
 }
 
+static int NameIsDenied(const wchar_t *name) {
+  if (name == NULL || name[0] == L'\0') {
+    return 0;
+  }
+  for (int i = 0; i < (int)ARRAY_SIZE(kBuiltinDeny); i++) {
+    if (!_wcsicmp(name, kBuiltinDeny[i])) {
+      return 1;
+    }
+  }
+  for (int i = 0; i < ProcessDenylist.length; i++) {
+    if (!_wcsicmp(name, ProcessDenylist.items[i])) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 void LoadSettings() {
   wchar_t txt[1000];
 
-  // TimerCheck
   KillTimer(g_hwnd, CHECKTIMER);
   GetPrivateProfileString(L"General", L"TimerCheck", L"0", txt, ARRAY_SIZE(txt), inipath);
   if (_wtoi(txt)) {
     SetTimer(g_hwnd, CHECKTIMER, CHECKINTERVAL, NULL);
   }
 
-  // ShowKillMessage (balloon tip after a successful kill)
   GetPrivateProfileString(L"General", L"ShowKillMessage", L"0", txt, ARRAY_SIZE(txt), inipath);
   show_kill_message = _wtoi(txt) ? 1 : 0;
 
-  // ProcessDenylist
   GetPrivateProfileString(L"General", L"ProcessDenylist", L"", txt, ARRAY_SIZE(txt), inipath);
   LoadProcessDenylist(txt);
+
+  GetPrivateProfileString(L"General", L"TrayLeftClick", L"xkill", txt, ARRAY_SIZE(txt), inipath);
+  tray_left_click = (!_wcsicmp(txt, L"toggle")) ? TRAY_LEFT_TOGGLE : TRAY_LEFT_XKILL;
+
+  GetPrivateProfileString(L"General", L"KillHotkey", L"Ctrl+Alt+F4", txt, ARRAY_SIZE(txt), inipath);
+  ParseHotkey(txt, &kill_hotkey, &kDefaultKillHotkey);
+
+  GetPrivateProfileString(L"General", L"XkillHotkey", L"Win+F4", txt, ARRAY_SIZE(txt), inipath);
+  ParseHotkey(txt, &xkill_hotkey, &kDefaultXkillHotkey);
+
+  GetPrivateProfileString(L"General", L"ShowFirstRunTip", L"1", txt, ARRAY_SIZE(txt), inipath);
+  show_first_run_tip = _wtoi(txt) ? 1 : 0;
+
+  GetPrivateProfileString(L"Advanced", L"AlwaysElevate", L"0", txt, ARRAY_SIZE(txt), inipath);
+  always_elevate = _wtoi(txt) ? 1 : 0;
 }
 
 static int IsElevatedProcess(void) {
@@ -182,18 +247,17 @@ static int IsElevatedProcess(void) {
   return result;
 }
 
-// Entry point
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPSTR szCmdLine, int iCmdShow) {
   { // Keep the stack clean after initialization
     g_hinst = hInst;
+    kill_hotkey = kDefaultKillHotkey;
+    xkill_hotkey = kDefaultXkillHotkey;
 
-    // Get ini path
     GetModuleFileName(NULL, inipath, ARRAY_SIZE(inipath));
     PathRemoveFileSpec(inipath);
     wcscat(inipath, L"\\"APP_NAME".ini");
     wchar_t txt[1000];
 
-    // Convert szCmdLine to argv and argc (max 10 arguments)
     char *argv[10];
     int argc = 1;
     argv[0] = szCmdLine;
@@ -203,28 +267,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPSTR szCmdLine, in
       argv[argc++]++;
     }
 
-    // Check arguments
     int elevate = 0;
     for (int i = 0; i < argc; i++) {
       if (!strcmp(argv[i],"-elevate") || !strcmp(argv[i],"-e")) {
-        // -elevate = create a new instance with administrator privileges
         elevate = 1;
       }
     }
 
     elevated = IsElevatedProcess();
-
-    // Register some messages
     WM_UPDATESETTINGS = RegisterWindowMessage(L"UpdateSettings");
 
-    // Check AlwaysElevate
+    // AlwaysElevate (also applied before window creation)
+    GetPrivateProfileString(L"Advanced", L"AlwaysElevate", L"0", txt, ARRAY_SIZE(txt), inipath);
+    always_elevate = _wtoi(txt) ? 1 : 0;
+
     if (!elevated) {
-      GetPrivateProfileString(L"Advanced", L"AlwaysElevate", L"0", txt, ARRAY_SIZE(txt), inipath);
-      if (_wtoi(txt)) {
+      if (always_elevate) {
         elevate = 1;
       }
-
-      // Handle request to elevate to administrator privileges
       if (elevate) {
         wchar_t path[MAX_PATH];
         GetModuleFileName(NULL, path, ARRAY_SIZE(path));
@@ -235,28 +295,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPSTR szCmdLine, in
       }
     }
 
-    // Single instance (after elevation relaunch path so UAC restart works)
     if (FindWindow(APP_NAME, NULL) != NULL) {
       return 0;
     }
 
-    // Message-only window: receives tray/hooks messages without a visible/fullscreen surface
     WNDCLASSEX wnd = { sizeof(WNDCLASSEX), 0, WindowProc, 0, 0, hInst, NULL, NULL, NULL, NULL, APP_NAME, NULL };
     RegisterClassEx(&wnd);
     g_hwnd = CreateWindowEx(0, wnd.lpszClassName, APP_NAME, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInst, NULL);
 
-    // Load settings (denylist, timer, kill message)
     LoadSettings();
-
-    // Tray icon
     InitTray();
     UpdateTray();
-
-    // Hook keyboard
     HookKeyboard();
+    MaybeShowFirstRunTip();
   }
 
-  // Message loop
   MSG msg;
   while (GetMessage(&msg,NULL,0,0)) {
     TranslateMessage(&msg);
@@ -266,19 +319,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPSTR szCmdLine, in
 }
 
 void Kill(HWND hwnd) {
-  // To prevent overkill
   if (killing || hwnd == NULL || hwnd == g_hwnd) {
     return;
   }
 
-  // Get process id of hwnd
   DWORD pid = 0;
   GetWindowThreadProcessId(hwnd, &pid);
   if (pid == 0 || pid == GetCurrentProcessId()) {
     return;
   }
 
-  // Check if the program is denylisted
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t name[256] = L"";
   if (process != NULL) {
@@ -287,21 +337,16 @@ void Kill(HWND hwnd) {
     process = NULL;
     if (ret != 0) {
       PathStripPath(name);
-      for (int i = 0; i < ProcessDenylist.length; i++) {
-        if (!_wcsicmp(name, ProcessDenylist.items[i])) {
-          return;
-        }
+      if (NameIsDenied(name)) {
+        return;
       }
     }
   }
 
-  // Let's do this
   killing = 1;
 
-  // Try terminate without SeDebugPrivilege first (cheaper for normal processes)
   process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
   if (process == NULL) {
-    // Retry with SeDebugPrivilege for protected / higher-integrity targets
     HANDLE hToken = NULL;
     TOKEN_PRIVILEGES tkp;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES|TOKEN_QUERY, &hToken)) {
@@ -344,84 +389,30 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     int vkey = ((PKBDLLHOOKSTRUCT)lParam)->vkCode;
 
     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-      // Check for Ctrl+Alt+F4 (Left or Right Ctrl/Alt, including AltGr layouts)
-      if (vkey == VK_LCONTROL || vkey == VK_RCONTROL) {
-        ctrl = 1;
-      }
-      else if (vkey == VK_LMENU || vkey == VK_RMENU) {
-        alt = 1;
-      }
-      else if (ctrl && alt && vkey == VK_F4) {
-        // Double check that Ctrl and Alt are being pressed.
-        // This prevents a faulty kill if we didn't received the keyup for these keys.
-        if (!(GetAsyncKeyState(VK_LCONTROL)&0x8000) && !(GetAsyncKeyState(VK_RCONTROL)&0x8000)) {
-          ctrl = 0;
-          return CallNextHookEx(NULL, nCode, wParam, lParam);
-        }
-        else if (!(GetAsyncKeyState(VK_LMENU)&0x8000) && !(GetAsyncKeyState(VK_RMENU)&0x8000)) {
-          alt = 0;
-          return CallNextHookEx(NULL, nCode, wParam, lParam);
-        }
-
-        // Get hwnd of foreground window
+      if (HotkeyMatch(&kill_hotkey, vkey)) {
         HWND hwnd = GetForegroundWindow();
-        if (hwnd == NULL) {
-          return CallNextHookEx(NULL, nCode, wParam, lParam);
+        if (hwnd != NULL) {
+          Kill(hwnd);
         }
-
-        // Kill it!
-        Kill(hwnd);
-
-        // Prevent this keypress from being propagated
         return 1;
       }
-      // Check for Win+F4
-      else if (vkey == VK_LWIN || vkey == VK_RWIN) {
-        win = 1;
-      }
-      // Note: Ctrl+Win+F4 is a shortcut to close virtual desktops
-      else if (!ctrl && win && vkey == VK_F4) {
-        // Double check that the windows button is being pressed
-        if (!(GetAsyncKeyState(VK_LWIN)&0x8000) && !(GetAsyncKeyState(VK_RWIN)&0x8000)) {
-          win = 0;
-          return CallNextHookEx(NULL, nCode, wParam, lParam);
-        }
-        // Double check that the ctrl button is not being pressed
-        if ((GetAsyncKeyState(VK_LCONTROL)&0x8000) || (GetAsyncKeyState(VK_RCONTROL)&0x8000)) {
-          ctrl = 1;
-          return CallNextHookEx(NULL, nCode, wParam, lParam);
-        }
-
-        // Hook mouse
+      if (HotkeyMatch(&xkill_hotkey, vkey)) {
         HookMouse();
-        // Prevent this keypress from being propagated
         return 1;
       }
-      else if (vkey == VK_ESCAPE && superkill) {
-        // Unhook mouse
+      if (vkey == VK_ESCAPE && superkill) {
         UnhookMouse();
-        // Prevent this keypress from being propagated
         return 1;
       }
     }
     else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
       killing = 0;
-      if (vkey == VK_LCONTROL || vkey == VK_RCONTROL) {
-        ctrl = 0;
-      }
-      else if (vkey == VK_LMENU || vkey == VK_RMENU) {
-        alt = 0;
-      }
-      else if (vkey == VK_LWIN || vkey == VK_RWIN) {
-        win = 0;
-      }
     }
   }
 
   return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-// Resolve the top-level window under a screen point.
 HWND WindowFromClickPoint(POINT pt) {
   HWND hwnd = WindowFromPoint(pt);
   if (hwnd == NULL) {
@@ -445,8 +436,6 @@ HWND WindowFromClickPoint(POINT pt) {
   return root ? root : hwnd;
 }
 
-// Replace common system cursors with the kill cursor.
-// Avoids a fullscreen overlay, which makes Windows 11 enable Do Not Disturb.
 void ApplyKillCursor() {
   if (killcur_applied) {
     return;
@@ -466,7 +455,6 @@ void ApplyKillCursor() {
   for (int i = 0; i < (int)ARRAY_SIZE(ids); i++) {
     HCURSOR copy = CopyCursor(killcur);
     if (copy != NULL) {
-      // SetSystemCursor takes ownership of the handle
       SetSystemCursor(copy, ids[i]);
     }
   }
@@ -486,19 +474,13 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (wParam == WM_LBUTTONDOWN) {
       POINT pt = ((PMSLLHOOKSTRUCT)lParam)->pt;
       HWND hwnd = WindowFromClickPoint(pt);
-
-      // Always leave xkill mode after a left click attempt
       UnhookMouse();
-
       if (hwnd != NULL) {
         Kill(hwnd);
       }
-
-      // Prevent mousedown from propagating
       return 1;
     }
     else if (wParam == WM_RBUTTONDOWN) {
-      // Cancel xkill
       DisableMouse();
       return 1;
     }
@@ -513,11 +495,9 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
 
 int HookMouse() {
   if (mousehook) {
-    // Mouse already hooked
     return 1;
   }
 
-  // Set up the mouse hook
   mousehook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, g_hinst, 0);
   if (mousehook == NULL) {
     #ifdef DEBUG
@@ -526,19 +506,14 @@ int HookMouse() {
     return 1;
   }
 
-  // Show kill cursor system-wide (no fullscreen window — avoids Win11 DND)
   ApplyKillCursor();
-
-  // Success
   superkill = 1;
   return 0;
 }
 
 DWORD WINAPI DelayedUnhookMouse(LPVOID param) {
   HHOOK hook = (HHOOK)param;
-  // Sleep so mouse events have time to be canceled
   Sleep(100);
-
   if (hook != NULL) {
     UnhookWindowsHookEx(hook);
   }
@@ -547,14 +522,12 @@ DWORD WINAPI DelayedUnhookMouse(LPVOID param) {
 
 int UnhookMouse() {
   if (!mousehook) {
-    // Still restore cursors if needed (e.g. cancel after DisableMouse)
     DisableMouse();
     return 1;
   }
 
   HHOOK hook = mousehook;
   mousehook = NULL;
-
   DisableMouse();
 
   HANDLE thread = CreateThread(NULL, 0, DelayedUnhookMouse, hook, 0, NULL);
@@ -562,10 +535,8 @@ int UnhookMouse() {
     CloseHandle(thread);
   }
   else {
-    // Fallback: unhook immediately if the worker could not start
     UnhookWindowsHookEx(hook);
   }
-
   return 0;
 }
 
@@ -578,29 +549,24 @@ int DisableMouse() {
 
 int HookKeyboard() {
   if (keyhook) {
-    // Keyboard already hooked
     return 1;
   }
 
-  // Set up the hook
   keyhook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, g_hinst, 0);
   if (keyhook == NULL) {
     Error(L"SetWindowsHookEx(WH_KEYBOARD_LL)", L"Could not hook keyboard. Another program might be interfering.", GetLastError());
     return 1;
   }
 
-  // Success
   UpdateTray();
   return 0;
 }
 
 int UnhookKeyboard() {
   if (!keyhook) {
-    // Keyboard not hooked
     return 1;
   }
 
-  // Remove keyboard hook
   if (UnhookWindowsHookEx(keyhook) == 0) {
     #ifdef DEBUG
     Error(L"UnhookWindowsHookEx(keyhook)", L"Could not unhook keyboard. Try restarting "APP_NAME".", GetLastError());
@@ -611,10 +577,7 @@ int UnhookKeyboard() {
     #endif
   }
 
-  // Remove mouse hook (it probably isn't hooked, but just in case)
   UnhookMouse();
-
-  // Success
   keyhook = NULL;
   UpdateTray();
   return 0;
@@ -634,8 +597,12 @@ void ToggleState() {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   if (msg == WM_TRAY) {
     if (lParam == WM_LBUTTONDOWN || lParam == WM_LBUTTONDBLCLK || lParam == NIN_SELECT || lParam == NIN_KEYSELECT) {
-      // Activate xkill instead of toggling state
-      HookMouse();
+      if (tray_left_click == TRAY_LEFT_TOGGLE) {
+        ToggleState();
+      }
+      else {
+        HookMouse();
+      }
     }
     else if (lParam == WM_MBUTTONDOWN) {
       if ((GetAsyncKeyState(VK_SHIFT)&0x8000)) {
@@ -681,6 +648,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     else if (wmId == SWM_AUTOSTART_ELEVATE_OFF) {
       SetAutostart(1, 0);
     }
+    else if (wmId == SWM_ALWAYS_ELEVATE_ON) {
+      WritePrivateProfileString(L"Advanced", L"AlwaysElevate", L"1", inipath);
+      always_elevate = 1;
+    }
+    else if (wmId == SWM_ALWAYS_ELEVATE_OFF) {
+      WritePrivateProfileString(L"Advanced", L"AlwaysElevate", L"0", inipath);
+      always_elevate = 0;
+    }
     else if (wmId == SWM_TIMERCHECK_ON) {
       WritePrivateProfileString(L"General", L"TimerCheck", L"1", inipath);
       SendMessage(g_hwnd, WM_UPDATESETTINGS, 0, 0);
@@ -717,16 +692,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   }
   else if (msg == WM_TIMER) {
     if (wParam == CHECKTIMER && ENABLED()) {
-      if ((GetAsyncKeyState(VK_LCONTROL)&0x8000 || GetAsyncKeyState(VK_RCONTROL)&0x8000)
-       && (GetAsyncKeyState(VK_LMENU)&0x8000 || GetAsyncKeyState(VK_RMENU)&0x8000)
-       && GetAsyncKeyState(VK_F4)&0x8000) {
+      if (HotkeyHeld(&kill_hotkey)) {
         HWND foreground = GetForegroundWindow();
         if (foreground != NULL) {
           Kill(foreground);
         }
       }
       else {
-        // Reset when the user has released the keys
         killing = 0;
       }
     }

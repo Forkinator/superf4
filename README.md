@@ -2,37 +2,30 @@
 
 Fork of [stefansundin/superf4](https://github.com/stefansundin/superf4) with bug fixes and Windows 11 updates. Upstream project site: [stefansundin.github.io/superf4](https://stefansundin.github.io/superf4/).
 
-## Changes in this fork (v1.4.1)
+## Changes in this fork (v1.4.2)
 
-### Features
-- **Left-click tray icon starts xkill** (instead of toggling enable/disable; use the right-click menu to enable/disable)
-- **Optional kill balloon** via `ShowKillMessage=1` in `SuperF4.ini`
-- **Right Ctrl / Right Alt / Right Win** support (helps AltGr layouts)
-- **Windows `build.bat`** for native MinGW / LLVM-MinGW builds
+### Standard (on by default)
+- **Left-click tray = xkill** (`TrayLeftClick=xkill`)
+- **Safer builtin denylist** — always blocks critical processes (`dwm`, `csrss`, `winlogon`, `svchost`, `taskmgr`, …) even if you clear the ini list
+- **Elevate on autostart via Task Scheduler** — one UAC when enabling; no prompt every boot
+- **Always elevate** toggle in the Options menu
+- **One-time first-run tip** explaining tray clicks
+- High-DPI xkill hit-testing, no fullscreen overlay (avoids Win11 Do Not Disturb), message-only window, single-instance, Win11 tray APIs
 
-### Fixes
-- **High-DPI hit-testing** — `WindowFromPoint` failed on scaled displays (error `0` / “operation completed successfully”); declared PerMonitorV2 DPI awareness and hardened lookup
-- **Windows 11 Do Not Disturb bell** — xkill no longer uses a fullscreen overlay (that triggered auto-DND); uses a system kill cursor instead
-- **TimerCheck hwnd shadow** — timer path no longer calls `DefWindowProc` on the wrong window
-- **Mouse hook** — right-clicks are no longer eaten after xkill ends; delayed unhook race fixed
-- **Registry** — `CheckAutostart` handles open failures; `SetAutostart` always closes the key
-- **Token leak** on elevation check
-- **`Error()`** safe when `FormatMessage` fails
-- **Refuse to kill own process**
+### Optional (ini / menu)
+- `TrayLeftClick=toggle` — classic left-click enable/disable
+- `KillHotkey` / `XkillHotkey` — e.g. `Ctrl+Alt+F4`, `Win+F4`, `Ctrl+Shift+Q`
+- `ShowKillMessage=1` — balloon after a kill
+- `TimerCheck=1` — poll hotkey when games block hooks
+- `AlwaysElevate=1` — or Options → Always elevate
+- `ShowFirstRunTip=1` — show the tip again
+- **Authenticode signing** — set `SUPERF4_PFX` + `SUPERF4_PFX_PASSWORD` when running `build.bat release`
 
-### Updates / optimizations
-- **Message-only window** (no leftover layered popup surface)
-- **Single-instance** guard
-- **Kill path** tries terminate first; enables `SeDebugPrivilege` only if needed
-- **ProcessDenylist** trims spaces and allocates item pointers once
-- **Tray** — `NOTIFYICON_VERSION_4`, `NIF_SHOWTIP`, `NIN_SELECT` for Windows 11
-- **Manifest** — proper name, Win10/11 compatibility IDs, long-path aware
+### SmartScreen / unsigned builds
+Windows may warn on download because builds are not Microsoft-attested. Prefer the installer or zip from [Releases](https://github.com/Forkinator/superf4/releases). If SmartScreen blocks the exe: Properties → **Unblock**, or use “More info” → Run anyway. Signing with your own code-signing certificate (see `build.bat`) removes most warnings.
 
-### Ini additions
-```ini
-ShowKillMessage=0
-; Set to 1 to show a tray balloon notification when a process is killed.
-```
+### Downloads
+Release assets match Stefan’s layout: `SuperF4-x.y.z.exe` (auto 32/64 installer), plus `*-32bit.zip` / `*-64bit.zip` portables.
 
 ---
 

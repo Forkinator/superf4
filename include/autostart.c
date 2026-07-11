@@ -1,14 +1,76 @@
 /*
   Copyright (C) 2019  Stefan Sundin
+  Copyright (C) 2026  Forkinator fork contributors
 
-  This program is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
+  Autostart via HKCU Run, or Task Scheduler (ONLOGON + HIGHEST) when
+  "Elevate on autostart" is enabled — avoids a UAC prompt every boot.
 */
 
-// No error reporting since we don't want the user to be interrupted
+#define AUTOSTART_TASK L"SuperF4"
+
+static void ClearRunKey(void) {
+  HKEY key;
+  if (RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+    RegDeleteValue(key, APP_NAME);
+    RegCloseKey(key);
+  }
+}
+
+static int RunSchtasks(const wchar_t *args, int need_admin) {
+  if (need_admin && !elevated) {
+    INT_PTR r = (INT_PTR)ShellExecute(NULL, L"runas", L"schtasks.exe", args, NULL, SW_HIDE);
+    return r > 32;
+  }
+
+  wchar_t cmdline[1400];
+  swprintf(cmdline, ARRAY_SIZE(cmdline), L"schtasks.exe %s", args);
+
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&si, sizeof(si));
+  ZeroMemory(&pi, sizeof(pi));
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+
+  if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    return 0;
+  }
+  WaitForSingleObject(pi.hProcess, 20000);
+  DWORD code = 1;
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return code == 0;
+}
+
+static int ElevatedTaskExists(void) {
+  return RunSchtasks(L"/Query /TN \"" AUTOSTART_TASK L"\" /FO LIST", 0);
+}
+
+static void DeleteElevatedTask(void) {
+  if (ElevatedTaskExists()) {
+    RunSchtasks(L"/Delete /TN \"" AUTOSTART_TASK L"\" /F", 1);
+  }
+}
+
+static int CreateElevatedTask(void) {
+  wchar_t path[MAX_PATH];
+  wchar_t args[1200];
+  GetModuleFileName(NULL, path, ARRAY_SIZE(path));
+  // One UAC prompt (if needed) to register a highest-privilege logon task
+  swprintf(args, ARRAY_SIZE(args),
+    L"/Create /TN \"" AUTOSTART_TASK L"\" /TR \"\\\"%s\\\"\" /SC ONLOGON /RL HIGHEST /F",
+    path);
+  return RunSchtasks(args, 1);
+}
+
+// Returns: 0=off, 1=on, 2=on+elevate (task or legacy Run -elevate)
 int CheckAutostart() {
+  if (ElevatedTaskExists()) {
+    return 2;
+  }
+
   HKEY key;
   wchar_t value[MAX_PATH+20] = L"";
   DWORD len = sizeof(value);
@@ -22,14 +84,12 @@ int CheckAutostart() {
     return 0;
   }
 
-  // Compare
   wchar_t path[MAX_PATH], compare[MAX_PATH+20];
   GetModuleFileName(NULL, path, ARRAY_SIZE(path));
   swprintf(compare, ARRAY_SIZE(compare), L"\"%s\"", path);
   if (wcsstr(value, compare) != value) {
     return 0;
   }
-  // Autostart is on, check arguments
   if (wcsstr(value, L" -elevate") != NULL) {
     return 2;
   }
@@ -37,30 +97,34 @@ int CheckAutostart() {
 }
 
 void SetAutostart(int on, int elevate) {
+  // Clear both mechanisms, then apply the requested mode
+  ClearRunKey();
+  DeleteElevatedTask();
+
+  if (!on) {
+    return;
+  }
+
+  if (elevate) {
+    if (!CreateElevatedTask()) {
+      Error(L"schtasks /Create", L"Could not create the elevated autostart task. You may have cancelled the UAC prompt.", GetLastError());
+    }
+    return;
+  }
+
   HKEY key;
   int error = RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL);
   if (error != ERROR_SUCCESS) {
     Error(L"RegCreateKeyEx(HKEY_CURRENT_USER,'Software\\Microsoft\\Windows\\CurrentVersion\\Run')", L"Error opening the registry.", error);
     return;
   }
-  if (on) {
-    wchar_t path[MAX_PATH], value[MAX_PATH+20];
-    GetModuleFileName(NULL, path, ARRAY_SIZE(path));
-    swprintf(value, ARRAY_SIZE(value), L"\"%s\"%s", path, (elevate?L" -elevate":L""));
-    error = RegSetValueEx(key, APP_NAME, 0, REG_SZ, (LPBYTE)value, (DWORD)((wcslen(value)+1)*sizeof(value[0])));
-    if (error != ERROR_SUCCESS) {
-      Error(L"RegSetValueEx('"APP_NAME"')", L"SetAutostart()", error);
-      RegCloseKey(key);
-      return;
-    }
-  }
-  else {
-    error = RegDeleteValue(key, APP_NAME);
-    if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND) {
-      Error(L"RegDeleteValue('"APP_NAME"')", L"SetAutostart()", error);
-      RegCloseKey(key);
-      return;
-    }
+
+  wchar_t path[MAX_PATH], value[MAX_PATH+20];
+  GetModuleFileName(NULL, path, ARRAY_SIZE(path));
+  swprintf(value, ARRAY_SIZE(value), L"\"%s\"", path);
+  error = RegSetValueEx(key, APP_NAME, 0, REG_SZ, (LPBYTE)value, (DWORD)((wcslen(value)+1)*sizeof(value[0])));
+  if (error != ERROR_SUCCESS) {
+    Error(L"RegSetValueEx('"APP_NAME"')", L"SetAutostart()", error);
   }
   RegCloseKey(key);
 }

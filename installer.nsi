@@ -9,8 +9,8 @@
 
 
 !define APP_NAME      "SuperF4"
-!define APP_VERSION   "1.4.1"
-!define APP_URL       "https://stefansundin.github.io/superf4/"
+!define APP_VERSION   "1.4.2"
+!define APP_URL       "https://github.com/Forkinator/superf4"
 
 
 ; Libraries
@@ -307,6 +307,8 @@ Section "Uninstall"
   Delete /REBOOTOK "$SMPROGRAMS\${APP_NAME}.lnk"
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_NAME}"
+  ; Best-effort removal of elevated autostart task
+  ExecWait 'schtasks /Delete /TN "${APP_NAME}" /F'
   DeleteRegKey /ifempty HKCU "Software\${APP_NAME}"
   DeleteRegKey /ifempty HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 SectionEnd
