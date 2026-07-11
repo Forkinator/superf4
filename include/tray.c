@@ -21,9 +21,10 @@ int InitTray() {
   }
 
   // Create icondata
+  ZeroMemory(&tray, sizeof(tray));
   tray.cbSize = sizeof(NOTIFYICONDATA);
   tray.uID = 0;
-  tray.uFlags = NIF_MESSAGE|NIF_ICON|NIF_TIP;
+  tray.uFlags = NIF_MESSAGE|NIF_ICON|NIF_TIP|NIF_SHOWTIP;
   tray.hWnd = g_hwnd;
   tray.uCallbackMessage = WM_TRAY;
 
@@ -34,10 +35,17 @@ int InitTray() {
 }
 
 int UpdateTray() {
-  wcsncpy(tray.szTip, (ENABLED() && elevated?l10n.tray_elevated:ENABLED()?l10n.tray_enabled:l10n.tray_disabled), ARRAY_SIZE(tray.szTip));
+  wcsncpy(tray.szTip, (ENABLED() && elevated?l10n.tray_elevated:ENABLED()?l10n.tray_enabled:l10n.tray_disabled), ARRAY_SIZE(tray.szTip)-1);
+  tray.szTip[ARRAY_SIZE(tray.szTip)-1] = L'\0';
   tray.hIcon = icon[ENABLED()?1:0];
+  tray.uFlags = NIF_MESSAGE|NIF_ICON|NIF_TIP|NIF_SHOWTIP;
 
-  if (Shell_NotifyIcon((tray_added?NIM_MODIFY:NIM_ADD),&tray)) {
+  // Try once. If it doesn't succeed, try again later — never block (keyboard hook latency).
+  if (Shell_NotifyIcon((tray_added?NIM_MODIFY:NIM_ADD), &tray)) {
+    if (!tray_added) {
+      tray.uVersion = NOTIFYICON_VERSION_4;
+      Shell_NotifyIcon(NIM_SETVERSION, &tray);
+    }
     tray_added = 1;
   }
   return 0;
@@ -59,10 +67,32 @@ int RemoveTray() {
   return 0;
 }
 
+void ShowKillMessage(const wchar_t *process_name) {
+  wchar_t info[256];
+  swprintf(info, ARRAY_SIZE(info), L"Killed: %s", process_name);
+
+  tray.uFlags = NIF_INFO|NIF_MESSAGE|NIF_ICON|NIF_TIP|NIF_SHOWTIP;
+  wcsncpy(tray.szInfoTitle, APP_NAME, ARRAY_SIZE(tray.szInfoTitle)-1);
+  tray.szInfoTitle[ARRAY_SIZE(tray.szInfoTitle)-1] = L'\0';
+  wcsncpy(tray.szInfo, info, ARRAY_SIZE(tray.szInfo)-1);
+  tray.szInfo[ARRAY_SIZE(tray.szInfo)-1] = L'\0';
+  tray.dwInfoFlags = NIIF_INFO;
+  tray.uTimeout = 3000;
+  Shell_NotifyIcon(NIM_MODIFY, &tray);
+
+  // Clear info flags so later UpdateTray calls do not re-show the balloon
+  tray.uFlags = NIF_MESSAGE|NIF_ICON|NIF_TIP|NIF_SHOWTIP;
+  tray.szInfo[0] = L'\0';
+  tray.szInfoTitle[0] = L'\0';
+}
+
 void ShowContextMenu(HWND hwnd) {
   POINT pt;
   GetCursorPos(&pt);
   HMENU menu = CreatePopupMenu();
+  if (menu == NULL) {
+    return;
+  }
 
   // Check autostart
   int autostart = CheckAutostart();
@@ -73,19 +103,21 @@ void ShowContextMenu(HWND hwnd) {
 
   // Menu
   InsertMenu(menu, -1, MF_BYPOSITION, SWM_TOGGLE, (ENABLED()?l10n.menu.disable:l10n.menu.enable));
-  InsertMenu(menu, -1, MF_BYPOSITION|(elevated || !vista?MF_DISABLED|MF_GRAYED:0), SWM_ELEVATE, (elevated?l10n.menu.elevated:l10n.menu.elevate));
+  InsertMenu(menu, -1, MF_BYPOSITION|(elevated?MF_DISABLED|MF_GRAYED:0), SWM_ELEVATE, (elevated?l10n.menu.elevated:l10n.menu.elevate));
 
   // Options
   HMENU menu_options = CreatePopupMenu();
-  InsertMenu(menu_options, -1, MF_BYPOSITION|(autostart?MF_CHECKED:0), (autostart?SWM_AUTOSTART_OFF:SWM_AUTOSTART_ON), l10n.menu.autostart);
-  InsertMenu(menu_options, -1, MF_BYPOSITION|(autostart==2?MF_CHECKED:0)|(!vista?MF_DISABLED|MF_GRAYED:0), (autostart==2?SWM_AUTOSTART_ELEVATE_OFF:SWM_AUTOSTART_ELEVATE_ON), l10n.menu.autostart_elevate);
-  InsertMenu(menu_options, -1, MF_BYPOSITION|MF_SEPARATOR, 0, NULL);
-  InsertMenu(menu_options, -1, MF_BYPOSITION|(timercheck?MF_CHECKED:0), (timercheck?SWM_TIMERCHECK_OFF:SWM_TIMERCHECK_ON), l10n.menu.timercheck);
-  InsertMenu(menu_options, -1, MF_BYPOSITION, SWM_SETTINGS, l10n.menu.open_ini);
-  InsertMenu(menu_options, -1, MF_BYPOSITION|MF_SEPARATOR, 0, NULL);
-  InsertMenu(menu_options, -1, MF_BYPOSITION, SWM_WEBSITE, l10n.menu.website);
-  InsertMenu(menu_options, -1, MF_BYPOSITION|MF_DISABLED|MF_GRAYED, 0, l10n.menu.version);
-  InsertMenu(menu, -1, MF_BYPOSITION|MF_POPUP, (UINT_PTR)menu_options, l10n.menu.options);
+  if (menu_options) {
+    InsertMenu(menu_options, -1, MF_BYPOSITION|(autostart?MF_CHECKED:0), (autostart?SWM_AUTOSTART_OFF:SWM_AUTOSTART_ON), l10n.menu.autostart);
+    InsertMenu(menu_options, -1, MF_BYPOSITION|(autostart==2?MF_CHECKED:0), (autostart==2?SWM_AUTOSTART_ELEVATE_OFF:SWM_AUTOSTART_ELEVATE_ON), l10n.menu.autostart_elevate);
+    InsertMenu(menu_options, -1, MF_BYPOSITION|MF_SEPARATOR, 0, NULL);
+    InsertMenu(menu_options, -1, MF_BYPOSITION|(timercheck?MF_CHECKED:0), (timercheck?SWM_TIMERCHECK_OFF:SWM_TIMERCHECK_ON), l10n.menu.timercheck);
+    InsertMenu(menu_options, -1, MF_BYPOSITION, SWM_SETTINGS, l10n.menu.open_ini);
+    InsertMenu(menu_options, -1, MF_BYPOSITION|MF_SEPARATOR, 0, NULL);
+    InsertMenu(menu_options, -1, MF_BYPOSITION, SWM_WEBSITE, l10n.menu.website);
+    InsertMenu(menu_options, -1, MF_BYPOSITION|MF_DISABLED|MF_GRAYED, 0, l10n.menu.version);
+    InsertMenu(menu, -1, MF_BYPOSITION|MF_POPUP, (UINT_PTR)menu_options, l10n.menu.options);
+  }
 
   InsertMenu(menu, -1, MF_BYPOSITION|MF_SEPARATOR, 0, NULL);
   InsertMenu(menu, -1, MF_BYPOSITION, SWM_XKILL, l10n.menu.xkill);
@@ -95,7 +127,9 @@ void ShowContextMenu(HWND hwnd) {
 
   // Track menu
   SetForegroundWindow(hwnd);
-  TrackPopupMenu(menu, TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, NULL);
+  TrackPopupMenu(menu, TPM_BOTTOMALIGN|TPM_LEFTBUTTON|TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+  // Required so the menu dismisses correctly on click-away
+  PostMessage(hwnd, WM_NULL, 0, 0);
   DestroyMenu(menu);
 }
 
@@ -104,12 +138,18 @@ int OpenUrl(wchar_t *url) {
   if (ret <= 32 && MessageBox(NULL,L"Failed to open browser. Copy url to clipboard?",APP_NAME,MB_ICONWARNING|MB_YESNO) == IDYES) {
     int size = (wcslen(url)+1)*sizeof(url[0]);
     wchar_t *data = LocalAlloc(LMEM_FIXED, size);
+    if (data == NULL) {
+      return ret;
+    }
     memcpy(data, url, size);
-    OpenClipboard(NULL);
-    EmptyClipboard();
-    SetClipboardData(CF_UNICODETEXT, data);
-    CloseClipboard();
-    LocalFree(data);
+    if (OpenClipboard(NULL)) {
+      EmptyClipboard();
+      SetClipboardData(CF_UNICODETEXT, data);
+      CloseClipboard();
+    }
+    else {
+      LocalFree(data);
+    }
   }
   return ret;
 }
